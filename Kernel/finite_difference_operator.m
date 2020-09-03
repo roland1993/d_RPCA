@@ -29,6 +29,7 @@ if strcmp(bc, 'linear')
     Dx(m, [m - 1, m]) = [-1, 1];
 elseif strcmp(bc, 'neumann')
     Dx(m, m) = 0;
+elseif strcmp(bc, 'dirichlet')
 else
     error('Unknown boundary condition!');
 end
@@ -39,6 +40,7 @@ if strcmp(bc, 'linear')
     Dy(n, [n - 1, n]) = [-1, 1];
 elseif strcmp(bc, 'neumann')
     Dy(n, n) = 0;
+elseif strcmp(bc, 'dirichlet')
 else
     error('Unknown boundary condition!');
 end

@@ -51,7 +51,7 @@ if ~conjugate_flag
         
         % distance to feasible region
         if sum(S) > nu
-            res2 = sum(S) - nu;
+            res2 = (sum(S) - nu) / nu;
         else
             res2 = 0;
         end

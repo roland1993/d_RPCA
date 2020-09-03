@@ -46,23 +46,6 @@ for i = 1 : numLM
     %   -> initial guess for transformed lm
     [~, min_idx]  = min(sum((g - LM(i, :)) .^ 2, 2));
     
-    %     % refine grid around initial guess
-    %     omega_loc = [p(min_idx, 1) - 5 * hx, p(min_idx, 1) + 5 * hx, ...
-    %         p(min_idx, 2) - 5 * hy, p(min_idx, 2) + 5 * hy];
-    %     [xx_loc, yy_loc] = cell_centered_grid(omega_loc, [500, 500]);
-    %     p_loc = [xx_loc(:), yy_loc(:)];
-    %
-    %     % interpolate deformation over refined grid
-    %     uStar_loc(:, 1) = ...
-    %         bilinear_interpolation(u(:, :, 1), [hx, hy], p_loc);
-    %     uStar_loc(:, 2) = ...
-    %         bilinear_interpolation(u(:, :, 2), [hx, hy], p_loc);
-    %
-    %     % find closest point in refined grid
-    %     g_loc = p_loc + uStar_loc;
-    %     [~, min_idx_loc] = min(sum((g_loc - LM(i, :)) .^ 2, 2));
-    %     LM_transformed(i, :) = p_loc(min_idx_loc, :);
-    
     % fixed-point iteration for landmark inversion
     y = LM(i, :);
     x = p(min_idx, :);

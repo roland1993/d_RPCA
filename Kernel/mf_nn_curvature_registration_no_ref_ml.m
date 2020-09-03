@@ -1,11 +1,11 @@
-%   min_{u,L} delta_{|| . || <= nu}(B * L)
+%   min_L delta_{|| . || <= nu}(B * L)
 %       + sum_i || l_i - I_(u_i) ||_1
-%       + sum_i mu * TV(u_i)
-%       + delta_{u_ref = 0}
-% INCLUDES MEAN-FILTERING (FILTER-SIZE: 5x5)
+%       + sum_i mu * CURVATURE(u_i)
+%       + delta_{mean(u_x) = 0, mean(u_y) = 0}
+%
+%   MEAN-FREE & NO REFERENCE & USES UNIQUENESS-TERM
 
-function [u, L, SV_history] = ...
-    mf_nn_registration_fix_ref_ml(img, ref_idx, optPara)
+function [u0, L0, SV_history] = mf_nn_curvature_registration_no_ref_ml(img, optPara)
 %--------------------------------------------------------------------------
 % This file is part of the d_RPCA repository from
 %           https://github.com/roland1993/d_RPCA
@@ -16,7 +16,6 @@ function [u, L, SV_history] = ...
 %--------------------------------------------------------------------------
 % IN:
 %   img     ~ cell(k, 1)        array of images
-%   refIdx  ~ 1 x 1             index of reference image
 %   optPara ~ struct            optimization parameters with fields
 %       .theta      ~ 1 x 1     over-relaxation parameter
 %       .maxIter    ~ 1 x 1     maximum number of iterations
@@ -27,9 +26,10 @@ function [u, L, SV_history] = ...
 %       .bc         ~ string    boundary condition for grid discretization
 %       .doPlots    ~ logical   do plots during optimization?
 %
-% OUT:                                      PER OUTER ITERATE:
-%   u0              ~ cell(outerIter, 1)        displacement fields
-%   L0              ~ cell(outerIter, 1)        low rank components
+% OUT:
+%   u0              ~ m*n x 2 x k        	displacement fields
+%   L0              ~ m*n x k   			low-rank components
+%	SV_history 		~ cell					development of singular values
 %--------------------------------------------------------------------------
 
 % make sure that interpolation routines are on search path
@@ -58,8 +58,8 @@ omega = [0, m, 0, n];
 numLevels = min(floor(log2([m, n]) - 5)) + 1;
 
 % initialize output
-u = cell(numLevels, max(optPara.outerIter));
-L = cell(numLevels, max(optPara.outerIter));
+% u = cell(numLevels, max(optPara.outerIter));
+% L = cell(numLevels, max(optPara.outerIter));
 SV_history = cell(numLevels, 1);
 
 % get multi-level representation
@@ -118,10 +118,10 @@ for lev = 1 : numLevels
         x = vec(x_high_res(1 : m, 1 : n, :));
         
     end
-    p = zeros(6 * k * m * n, 1);
+    p = zeros(4 * k * m * n, 1);
     
     % gradient operator for displacement fields
-    A2 = finite_difference_operator(m, n, h_grid, k, bc);
+    A2 = discrete_laplacian(m, n, h_grid, k, bc);
     
     % all zeros
     A3 = sparse(k * m * n, 2 * k * m * n);
@@ -130,13 +130,13 @@ for lev = 1 : numLevels
     A4 = speye(k * m * n);
     
     % all zeros
-    A5 = sparse(4 * k * m * n, k * m * n);
+    A5 = sparse(2 * k * m * n, k * m * n);
     
     % mean free operator
     A6 = mean_free_operator(m, n, k);
     
     % set function handle to G-part of target function
-    G_handle = @(x, c_flag) G(x, [m, n, k], ref_idx, c_flag);
+    G_handle = @(x, c_flag) G(x, [m, n, k], c_flag);
     
     % if plotting was requested -> create figure (handle)
     if doPlots && (lev == 1)
@@ -202,20 +202,8 @@ for lev = 1 : numLevels
             F_handle, G_handle, A, x, p, theta, tau, sigma, maxIter, tol);
         
         % get displacements and low rank components from minimizer x
-        u0 = reshape(x(1 : 2 * k * m * n), [m n 2 k]);
+        u0 = reshape(x(1 : 2 * k * m * n), m * n, 2, k);
         L0 = x(2 * k * m * n + 1 : end);
-        
-        % add median filtering
-        for i = 1 : k
-            u0(:, :, 1, i) = medfilt2(u0(:, :, 1, i), [5 5]);
-            u0(:, :, 2, i) = medfilt2(u0(:, :, 2, i), [5 5]);
-        end
-        x(1 : 2 * k * m * n) = u0(:);
-        u0 = reshape(u0, [m * n, 2, k]);
-        
-        % store results
-        u{lev, o} = u0;
-        L{lev, o} = reshape(L0, m, n, k);
         
         % store info on development of singular values
         [~, S, ~] = svd(reshape(A6 * L0, m * n, k), 'econ');
@@ -226,7 +214,7 @@ for lev = 1 : numLevels
             plot_progress(fh1, primal_history, dual_history);
             set(fh1, 'NumberTitle', 'off', ...
                 'Name', sprintf('ITERATE %d OUT OF %d', o, outerIter));
-            display_results(ML(lev, :), u0, [], L{lev, o}, fh2);
+            display_results(ML(lev, :), u0, [], reshape(L0, m, n, k), fh2);
             plot_sv(fh3, SV_history{lev}(:, 1 : o));
             drawnow;
         end
@@ -243,40 +231,37 @@ end
             F(y, b, k, h_grid, mu, nu, sigma, conjugate_flag)
         % splits input y = [y1; y2; y3] and computes
         %   F_1(y1) = h1 * h2 * || y1 - b ||_1
-        %   F_2(y2) = mu * sum_i h1 * h2 * || y2_i ||_{2,1}
+        %   F_2(y2) = 0.5 * mu * h1 * h2 * || y2 ||_2^2
         %   F_3(y3) = delta_{|| . ||_* <= nu}(y3)
         
         % get number of template images and number of pixels per image
-        mn = numel(y) / (6 * k);
+        mn = numel(y) / (4 * k);
         
         % split input y into r- and v-part
         y1 = y(1 : k * mn);
-        y2 = y(k * mn + 1 : 5 * k * mn);
-        y3 = y((5 * k * mn) + 1 : end);
+        y2 = y(k * mn + 1 : 3 * k * mn);
+        y3 = y((3 * k * mn) + 1 : end);
         
         if nargout == 3
             
             % initialize output
-            res3 = zeros(6 * k * mn, 1);
+            res3 = zeros(4 * k * mn, 1);
             
             % apply SAD to y1-part
             [~, ~, res3_F1] = ...
-                SAD_weight(y1, b, prod(h_grid), sigma, conjugate_flag);
+                SAD(y1, b, prod(h_grid), sigma, conjugate_flag);
             res3(1 : k * mn) = res3_F1;
             
-            % apply mu * ||.||_{2,1} to each of the k components y2_i
-            y2 = reshape(y2, 4 * mn, k);
-            for j = 1 : k
-                [~, ~, res3_F2] = norm21(y2(:, j), ...
-                    mu * prod(h_grid), sigma, conjugate_flag);
-                res3(k * mn + (j - 1) * 4 * mn + 1 : ...
-                        k * mn + j * 4 * mn) = res3_F2;
-            end
+            % apply sum of squares to y2
+            g = sparse(2 * k * mn, 1);
+            [~, ~, res3_F2] = ...
+                SSD(y2, g, mu * prod(h_grid), sigma, conjugate_flag);
+            res3(k * mn + 1 : 3 * k * mn) = res3_F2;
             
             % apply delta_{|| . ||_* <= nu} to y3
             [~, ~, res3_F3] = nuclear_norm_constraint( ...
                 y3, k, sigma, nu, conjugate_flag);
-            res3(5 * k * mn + 1 : end) = res3_F3;
+            res3(3 * k * mn + 1 : end) = res3_F3;
             
             % dummy outputs
             res1 = [];
@@ -286,18 +271,12 @@ end
             
             % apply F1 = SAD to y1-part
             [res1_F1, res2_F1] = ...
-                SAD_weight(y1, b, prod(h_grid), sigma, conjugate_flag);
+                SAD(y1, b, prod(h_grid), sigma, conjugate_flag);
             
-            % apply mu * ||.||_{2,1} to each of the k components y2_i
-            y2 = reshape(y2, 4 * mn, k);
-            res1_F2 = 0;
-            res2_F2 = 0;
-            for j = 1 : k
-                [res1_F2_i, res2_F2_i] = norm21(y2(:, j), ...
-                    mu * prod(h_grid), sigma, conjugate_flag);
-                res1_F2 = res1_F2 + res1_F2_i;
-                res2_F2 = max(res2_F2, res2_F2_i);
-            end
+            % apply sum of squares to y2
+            g = sparse(2 * k * mn, 1);
+            [res1_F2, res2_F2] = ...
+                SSD(y2, g, mu * prod(h_grid), sigma, conjugate_flag);
             
             % apply delta_{|| . ||_* <= nu} to y3
             [res1_F3, res2_F3] = nuclear_norm_constraint( ...
@@ -311,7 +290,7 @@ end
         
     end
 %-------------------------------------------------------------------------%
-    function [res1, res2, res3] = G(x, s, ref_idx, conjugate_flag)
+    function [res1, res2, res3] = G(x, s, conjugate_flag)
         
         % s = [m, n, k]
         
@@ -323,7 +302,7 @@ end
             
             % apply delta_{mean(u_x) = 0, mean(u_y) = 0} to x_u
             [~, ~, res3_G1] = ...
-                fix_reference_constraint(x_u, s, ref_idx, conjugate_flag);
+                mean_zero_indicator(x_u, s, conjugate_flag);
             
             % apply zero-function to x_l
             [~, ~, res3_G2] = zero_function(x_l, conjugate_flag);
@@ -339,7 +318,7 @@ end
             
             % apply delta_{mean(u_x) = 0, mean(u_y) = 0} to x_u
             [res1_G1, res2_G1] = ...
-                fix_reference_constraint(x_u, s, ref_idx, conjugate_flag);
+                mean_zero_indicator(x_u, s, conjugate_flag);
             
             % apply zero-function to x_l
             [res1_G2, res2_G2] = zero_function(x_l, conjugate_flag);

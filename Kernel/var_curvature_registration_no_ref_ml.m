@@ -1,8 +1,10 @@
-%   min_u 0.5 * sum_i || T_i(u_i) - T_bar ||
-%       + sum_i mu * TV(u_i)
+%   0.5 * sum_i || T_i(u_i) - T_bar ||_2^2
+%       + sum_i mu * CURVATURE(u_i)
 %       + delta_{mean(u_x) = 0, mean(u_y) = 0}
+%
+%   VARIANCE DATA-TERM & NO REFERENCE & USES UNIQUENESS-TERM
 
-function u = var_registration_no_ref_ml(img, optPara)
+function u0 = var_curvature_registration_no_ref_ml(img, optPara)
 %--------------------------------------------------------------------------
 % This file is part of the d_RPCA repository from
 %           https://github.com/roland1993/d_RPCA
@@ -19,13 +21,11 @@ function u = var_registration_no_ref_ml(img, optPara)
 %       .tol        ~ 1 x 1     tolerance for p/d-gap + infeasibilities
 %       .outerIter  ~ 1 x 1     number of outer iterations
 %       .mu         ~ 1 x 1     weighting factor (see model above)
-%       .nu_factor  ~ 1 x 1     reduction of nu per outer iterate
 %       .bc         ~ string    boundary condition for grid discretization
 %       .doPlots    ~ logical   do plots during optimization?
 %
-% OUT:                                      PER OUTER ITERATE:
-%   u0              ~ cell(outerIter, 1)        displacement fields
-%   L0              ~ cell(outerIter, 1)        low rank components
+% OUT:
+%   u0              ~ m*n x 2 x k        displacement fields
 %--------------------------------------------------------------------------
 
 % make sure that interpolation routines are on search path
@@ -52,9 +52,6 @@ omega = [0, m, 0, n];
 %-------BEGIN MULTI LEVEL-------------------------------------------------%
 % resolution at lowest level: m, n >= 2 ^ 5
 numLevels = min(floor(log2([m, n]) - 5)) + 1;
-
-% initialize output
-u = cell(numLevels, max(optPara.outerIter));
 
 % get multi-level representation
 ML = cell(numLevels, k);
@@ -110,10 +107,10 @@ for lev = 1 : numLevels
         x = vec(x_high_res(1 : m, 1 : n, :));
         
     end
-    p = zeros(5 * k * m * n, 1);
+    p = zeros(3 * k * m * n, 1);
     
-    % gradient operator for displacement fields
-    A2 = finite_difference_operator(m, n, h_grid, k, bc);
+    % laplace operator for displacement fields
+    A2 = discrete_laplacian(m, n, h_grid, k, bc);
     
     % mean free operator
     K = mean_free_operator(m, n, k);
@@ -173,10 +170,7 @@ for lev = 1 : numLevels
         
         % get displacements from minimizer x
         u0 = reshape(x, m * n, 2, k);
-        
-        % store results
-        u{lev, o} = u0;
-        
+
         % plot progress (if requested)
         if doPlots
             plot_progress(fh1, primal_history, dual_history);
@@ -198,10 +192,10 @@ end
             F(y, b, k, h_grid, mu, sigma, conjugate_flag)
         % splits input y = [y1; y2] and computes
         %   F_1(y1) = 0.5 * h1 * h2 * || y1 - b ||_2^2
-        %   F_2(y2) = mu * sum_i h1 * h2 * || y2_i ||_{2,1}
+        %   F_2(y2) = 0.5 * mu * h1 * h2 || y2 ||_2^2
         
         % get number of template images and number of pixels per image
-        mn = numel(y) / (5 * k);
+        mn = numel(y) / (3 * k);
         
         % split input y into r- and v-part
         y1 = y(1 : k * mn);
@@ -210,21 +204,18 @@ end
         if nargout == 3
             
             % initialize output
-            res3 = zeros(5 * k * mn, 1);
+            res3 = zeros(3 * k * mn, 1);
             
-            % apply SAD to y1-part
+            % apply SSD to y1-part
             [~, ~, res3_F1] = ...
                 SSD(y1, b, prod(h_grid), sigma, conjugate_flag);
             res3(1 : k * mn) = res3_F1;
             
-            % apply mu * ||.||_{2,1} to each of the k components y2_i
-            y2 = reshape(y2, 4 * mn, k);
-            for j = 1 : k
-                [~, ~, res3_F2] = norm21(y2(:, j), ...
-                    mu * prod(h_grid), sigma, conjugate_flag);
-                res3(k * mn + (j - 1) * 4 * mn + 1 : ...
-                        k * mn + j * 4 * mn) = res3_F2;
-            end
+            % apply weighted SSD to y2-part
+            g = sparse(2 * k * mn, 1);
+            [~, ~, res3_F2] = ...
+                SSD(y2, g, mu * prod(h_grid), sigma, conjugate_flag);
+            res3(k * mn + 1 : end) = res3_F2;
             
             % dummy outputs
             res1 = [];
@@ -232,20 +223,14 @@ end
             
         else
             
-            % apply F1 = SAD to y1-part
+            % apply SSD to y1-part
             [res1_F1, res2_F1] = ...
                 SSD(y1, b, prod(h_grid), sigma, conjugate_flag);
             
-            % apply mu * ||.||_{2,1} to each of the k components y2_i
-            y2 = reshape(y2, 4 * mn, k);
-            res1_F2 = 0;
-            res2_F2 = 0;
-            for j = 1 : k
-                [res1_F2_i, res2_F2_i] = norm21(y2(:, j), ...
-                    mu * prod(h_grid), sigma, conjugate_flag);
-                res1_F2 = res1_F2 + res1_F2_i;
-                res2_F2 = max(res2_F2, res2_F2_i);
-            end
+             % apply sum of squares to y2
+            g = sparse(2 * k * mn, 1);
+            [res1_F2, res2_F2] = ...
+                SSD(y2, g, mu * prod(h_grid), sigma, conjugate_flag);
             
             % compute outputs
             res1 = [res1_F1, res1_F2];
